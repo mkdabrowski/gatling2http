@@ -1,0 +1,109 @@
+#!/bin/python
+
+import argparse
+import fileinput
+import sys
+from itertools import *
+import httplib
+from urlparse import urlparse, urlunparse
+
+
+def headerToTuple(header):
+    sp = header.split(":")
+    key = sp.pop(0).strip()
+    value = ":".join(sp).strip()
+    return (key, value)    
+
+class Connection:
+    def __init__(self, data, location = None):
+        def splitHeadersAndBody(entry):
+            entry = entry.strip()
+            return entry != "" and not entry.startswith("compositeByteData=")
+
+        def removeComposite(entry):
+            if entry.startswith("compositeByteData="):
+                return  entry[18:]
+            else:
+                return entry
+                
+        data = [x.replace("\'","\'\\\'\'") for x in data]
+        startLine = data.pop(0).split()
+        self.method = startLine.pop(0)
+
+        if(location is not None):
+            self.host = urlparse(location)
+        else:
+            self.host = urlparse(startLine.pop(0))
+        
+        headers = list(takewhile(splitHeadersAndBody, data))
+        self.headers = dict(map(headerToTuple, headers))
+        self.headers.pop("Content-Length", None)
+        self.body = [x for x in list(dropwhile(splitHeadersAndBody, data)) if x != ""]
+        self.body = map(removeComposite, self.body)
+
+       
+        if self.host.netloc == '':
+            if self.headers.get("Host", None) is not None:
+                self.host = self.host._replace(netloc = self.headers["Host"])
+            else:
+                raise ValueError("Host address is not specified")
+
+        if (self.host.scheme == ""):
+            self.host = self.host._replace(scheme = "https")
+
+
+    def getCurl(self, host = None):
+        command = "curl \'{0}\' -X {1} {2}{3} --compressed"
+        headers = ['-H \'{0}: {1}\''.format(k, v) for k, v in self.headers.items()]
+
+        if any([self.method in x for x in ['POST', 'PATCH', 'PUT']]):
+            body = " -d \'{0}\'".format("".join(self.body).strip())
+        else:
+            body = ""    
+        return command.format(urlunparse(self.host), self.method, ' '.join(headers), body)
+
+    def fireHttp(self, host = None):
+        if self.host.scheme == "http":
+            connection = httplib.HTTPConnection(self.host.netloc)
+        elif self.host.scheme == "https":
+            connection = httplib.HTTPSConnection(self.host.netloc)
+        else:
+            raise ValueError("Unsupported scheme")
+        connection.request(self.method, self.host.path + self.host.query, "".join(self.body).strip(), self.headers)
+        return connection.getresponse()
+
+
+
+parser = argparse.ArgumentParser(description = 'Program convert http request into curl queries')
+group = parser.add_mutually_exclusive_group()
+group.add_argument("-c", "--curl", help ="print curl method", action="store_true")
+group.add_argument("-e", "--exec", help ="fire http request", action="store_true")
+parser.add_argument('-f', '--file')
+parser.add_argument('-g', '--gatling')
+parser.add_argument('--host')
+
+args = parser.parse_args()
+if args.host is not None:
+    host = urlparse(args.host)
+    if host.netloc == '':
+        host = host._replace(netloc = host.path, path = "")
+        args.host = urlunparse(host)
+
+if args.file == None:
+    data = [x for x in sys.stdin if x.strip() != "headers="]
+else:
+    print "From file is not supported yet, please contribute"
+
+connect = Connection(data, args.host)
+if args.curl:
+    print connect.getCurl()
+else:
+    response = connect.fireHttp()
+    message = "{0} {1} {2}\n{3}\n{4}"
+    # headers = ["{0} {1} {2} {3}".format(x, y) for x,y in response.getheaders()]
+    if response.version == 11:
+        version = "HTTP/1.1"
+    else:
+        version = "HTTP/1.0"
+
+    print message.format(version, response.status, response.reason, response.msg, response.read())
