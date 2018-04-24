@@ -1,11 +1,12 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import argparse
 import fileinput
 import sys
 from itertools import *
-import httplib
-from urlparse import urlparse, urlunparse
+from http import client
+from urllib.parse import urlparse, urlunparse
+import requests
 
 
 def headerToTuple(header):
@@ -63,14 +64,8 @@ class Connection:
         return command.format(urlunparse(self.host), self.method, ' '.join(headers), body)
 
     def fireHttp(self, host = None):
-        if self.host.scheme == "http":
-            connection = httplib.HTTPConnection(self.host.netloc)
-        elif self.host.scheme == "https":
-            connection = httplib.HTTPSConnection(self.host.netloc)
-        else:
-            raise ValueError("Unsupported scheme")
-        connection.request(self.method, self.host.path + self.host.query, "".join(self.body).strip(), self.headers)
-        return connection.getresponse()
+        connection = getattr(requests, self.method.lower())
+        return connection(urlunparse(self.host), headers = self.headers, data="".join(self.body).strip())
 
 
 
@@ -92,18 +87,20 @@ if args.host is not None:
 if args.file == None:
     data = [x for x in sys.stdin if x.strip() != "headers="]
 else:
-    print "From file is not supported yet, please contribute"
+    print("From file is not supported yet, please contribute")
 
 connect = Connection(data, args.host)
 if args.curl:
-    print connect.getCurl()
+    print(connect.getCurl())
 else:
     response = connect.fireHttp()
-    message = "{0} {1} {2}\n{3}\n{4}"
-    # headers = ["{0} {1} {2} {3}".format(x, y) for x,y in response.getheaders()]
-    if response.version == 11:
+    message = "{0} {1} {2}\n{3}\n\n{4}"
+    headers = "\n".join(["{0}: {1}".format(x, y) for x,y in response.headers.items()])
+    if response.raw.version == 11:
         version = "HTTP/1.1"
     else:
         version = "HTTP/1.0"
+    # print(response.getheader("Content-Type"))
 
-    print message.format(version, response.status, response.reason, response.msg, response.read())
+
+    print(message.format(version, response.status_code, response.reason, headers, response.text))
